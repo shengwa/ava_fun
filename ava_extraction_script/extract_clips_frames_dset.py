@@ -1,20 +1,31 @@
+from __future__ import print_function
+
+import argparse
 import os
 import subprocess
+import sys
+
 import cv2
 import svgwrite
-import pickle
 
-import pdb
+parser = argparse.ArgumentParser()
+parser.add_argument("--video_dir", default="../videos/", help="Videos path.")
+parser.add_argument("--annot_file", default="../ava_train_v1.0.csv", help="Anotation file path.")
+parser.add_argument("--actionlist_file", default="../ava_action_list_v1.0.pbtxt", help="Action list file path.")
+parser.add_argument("--output_dir", default="out", help="Output path.")
+parser.add_argument("--partial_process", type=bool, default=False, help="If setting to true then process only part of the annotations.")
+parser.add_argument("--partial_start", type=int, default=0, help="Partial process starting index.")
+parser.add_argument("--partial_num", type=int, default=0, help="Partial process number.")
 
-videodir = "../videos/"
-annotfile = "../ava_train_v1.0.csv"
-actionlistfile = "../ava_action_list_v1.0.pbtxt"
-outdir = "out"
+FLAGS = parser.parse_args()
 
-outpath_dset = outdir + "/ava.pkl"
-outdir_clips = outdir + "/clips/"
-outdir_midframe = outdir + "/midframes/"
+videodir = FLAGS.video_dir
+annotfile = FLAGS.annot_file
+actionlistfile = FLAGS.actionlist_file
+outdir = FLAGS.output_dir
 
+outdir_clips = os.path.join(outdir, "clips")
+outdir_midframe = os.path.join(outdir, "midframes")
 
 clip_length = 3 # seconds
 clip_time_padding = 1.0 # seconds
@@ -22,11 +33,11 @@ clip_time_padding = 1.0 # seconds
 # util
 def hou_min_sec(millis):
     millis = int(millis)
-    seconds=(millis/1000)%60
+    seconds = (millis / 1000) % 60
     seconds = int(seconds)
-    minutes=(millis/(1000*60))%60
+    minutes = (millis / (1000 * 60)) % 60
     minutes = int(minutes)
-    hours=(millis/(1000*60*60))
+    hours = (millis / (1000 * 60 * 60))
     return ("%d:%d:%d" % (hours, minutes, seconds))
 
 def _supermakedirs(path, mode):
@@ -41,7 +52,7 @@ def _supermakedirs(path, mode):
 
 def mkdir_p(path):
     try:
-        _supermakedirs(path, 0775)
+        _supermakedirs(path, 0o775) # Supporting Python 2 & 3
     except OSError as exc: # Python >2.5
         pass
 
@@ -74,17 +85,20 @@ with open(actionlistfile) as f:
 # extract all clips and middle frames
 with open(annotfile) as f:
 	annots = f.read().splitlines()
-	
 
 #The format of a row is the following: video_id, middle_frame_timestamp, person_box, action_id
 #-5KQ66BBWC4,0904,0.217,0.008,0.982,0.966,12
 
+if FLAGS.partial_process:
+	assert FLAGS.partial_num > 0, "Partial process number should be positive."
+	assert FLAGS.partial_start < len(annots), "Start index is larger than annotation number!"
+	annot_range = range(FLAGS.partial_start, min(FLAGS.partial_start + FLAGS.partial_num, len(annots)))
+else:
+	annot_range = range(len(annots))
 
-annot_number = 0
-
-for ann in annots:
+for annot_number in annot_range:
 	# PARSE ANNOTATION STRING
-	
+	ann = annots[annot_number]
 	seg = ann.split(',')
 	
 	video_id = seg[0]
@@ -96,34 +110,38 @@ for ann in annots:
 	action_id = seg[6]
 	
 	
-	videofile_noext = videodir + '/' + video_id
+	videofile_noext = os.path.join(videodir, video_id)
 	videofile = subprocess.check_output('ls %s*' % videofile_noext, shell=True)
 	videofile = videofile.split()[0]
 	
+	if sys.version > '3.0':
+		videofile = videofile.decode('utf-8')
 	video_extension = videofile.split('.')[-1]
 	
 	# OPEN VIDEO FOR INFORMATION IF NECESSARY
 	vcap = cv2.VideoCapture(videofile) # 0=camera
-	if vcap.isOpened(): 
+	if vcap.isOpened():
 		# get vcap property 
-		vidwidth = vcap.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)   # float
-		vidheight = vcap.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT) # float
-
+		if cv2.__version__ < '3.0':
+			vidwidth = vcap.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)   # float
+			vidheight = vcap.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT) # float
+		else:
+			vidwidth = vcap.get(cv2.CAP_PROP_FRAME_WIDTH)	# float
+			vidheight = vcap.get(cv2.CAP_PROP_FRAME_WIDTH)	# float
 		# or
-		vidwidth = vcap.get(3)  # float
-		vidheight = vcap.get(4) # float
+		# vidwidth = vcap.get(3)  # float
+		# vidheight = vcap.get(4) # float
 	else:
 		exit(1)
 	
-	
 	# EXTRACT KEYFRAME WITH FFMPEG
 	
-	print middle_frame_timestamp
+	print(middle_frame_timestamp)
 	
-	outdir_keyframe = outdir_midframe + '/' + video_id + '/'
+	outdir_keyframe = os.path.join(outdir_midframe, video_id)
 	mkdir_p(outdir_keyframe)
 	
-	outpath = outdir_keyframe + '%d.jpg' % (int(middle_frame_timestamp))
+	outpath = os.path.join(outdir_keyframe, '%d.jpg' % (int(middle_frame_timestamp)))
 	ffmpeg_command = 'rm %(outpath)s; ffmpeg -ss %(timestamp)f -i %(videopath)s -frames:v 1 %(outpath)s' % {
 		'timestamp': float(middle_frame_timestamp),
 		'videopath': videofile,
@@ -133,28 +151,27 @@ for ann in annots:
 	subprocess.call(ffmpeg_command, shell=True)
 	#subprocess.call('eog %(outpath)s &' % {'outpath': outpath}, shell=True)
 	
-	
 	# EXTRACT CLIPS WITH FFMPEG
 	
-	print middle_frame_timestamp
+	print(middle_frame_timestamp)
 	
-	outdir_clip = outdir_clips + '/' + video_id + '/'
+	outdir_clip = os.path.join(outdir_clips, video_id)
 	mkdir_p(outdir_clip)
 	
 	# ffmpeg -i a.mp4 -force_key_frames 00:00:09,00:00:12 out.mp4
 	# ffmpeg -ss 00:00:09 -i out.mp4 -t 00:00:03 -vcodec copy -acodec copy -y final.mp4
 	
-	clip_start = middle_frame_timestamp - clip_time_padding - float(clip_length)/2
+	clip_start = middle_frame_timestamp - clip_time_padding - float(clip_length) / 2
 	if clip_start < 0:
 		clip_start = 0
-	clip_end = middle_frame_timestamp + float(clip_length)/2
+	clip_end = middle_frame_timestamp + float(clip_length) / 2
 	
-	outpath_clip = outdir_clip + '%d.%s' % (int(middle_frame_timestamp), video_extension)
+	outpath_clip = os.path.join(outdir_clip, '%d.%s' % (int(middle_frame_timestamp), video_extension))
 	#outpath_clip_tmp = outpath + '_tmp.%s' % video_extension
 	
 	ffmpeg_command = 'rm %(outpath)s; ffmpeg -ss %(start_timestamp)s -i %(videopath)s -g 1 -force_key_frames 0 -t %(clip_length)d %(outpath)s' % {
-		'start_timestamp': hou_min_sec(clip_start*1000),
-		'end_timestamp': hou_min_sec(clip_end*1000),
+		'start_timestamp': hou_min_sec(clip_start * 1000),
+		'end_timestamp': hou_min_sec(clip_end * 1000),
 		'clip_length': clip_length + clip_time_padding,
 		'videopath': videofile,
 		'outpath': outpath_clip
@@ -168,17 +185,17 @@ for ann in annots:
 	
 	
 	# LOAD GENERATED JPG, CREATE SVG, OVERLAY BOUNDING BOX
-	outdir_keyframe_svg = outdir + '/visu_svg/' + video_id + '/'
+	outdir_keyframe_svg = os.path.join(outdir, 'visu_svg', video_id)
 	mkdir_p(outdir_keyframe_svg)
 	
-	outpath_svg = outdir_keyframe_svg + '%d_%s_%d.svg' % (int(middle_frame_timestamp), action_id, annot_number )
+	outpath_svg = os.path.join(outdir_keyframe_svg, '%d_%s_%d.svg' % (int(middle_frame_timestamp), action_id, annot_number))
 
 	svg_document = svgwrite.Drawing(filename = outpath_svg,
 	                                size = ("%dpx" % vidwidth, "%dpx" % vidheight))
 	
 	svg_document.add(svg_document.image(outpath))
 	
-	#    ADD BBOX
+	# ADD BBOX
 	insert_left = vidwidth * left_bbox
 	insert_top = vidheight * top_bbox
 	bbox_width = vidwidth * (right_bbox - left_bbox)
@@ -192,7 +209,7 @@ for ann in annots:
 		fill_opacity=0.0)
 	)
 	
-	#    ADD ACTION CAPTION
+	# ADD ACTION CAPTION
 	actioncaption = ''
 	label_type_and_name = label_dict.get(action_id)
 	if label_type_and_name != None:
@@ -208,25 +225,22 @@ for ann in annots:
 			font_weight = "bold")
 		)
 	
-	print svg_document.tostring()
+	print(svg_document.tostring())
 	svg_document.save()
 	
-	outdir_visu_jpg = outdir + '/visu_jpg/' + video_id + '/'
+	outdir_visu_jpg = os.path.join(outdir, 'visu_jpg', video_id)
 	mkdir_p(outdir_visu_jpg)
-	outpath_visu_jpg = outdir_visu_jpg + '%d_%s_%d.jpg' % (int(middle_frame_timestamp), action_id, annot_number )
+	outpath_visu_jpg = os.path.join(outdir_visu_jpg, '%d_%s_%d.jpg' % (int(middle_frame_timestamp), action_id, annot_number))
 	
 	subprocess.call('convert -- "%s" "%s"' % (outpath_svg, outpath_visu_jpg), shell=True)
 	
 	
-	print ""
-	print "ffmpeg_command:", ffmpeg_command
-	print "middle_frame_timestamp:", middle_frame_timestamp
-	print "time:", hou_min_sec(middle_frame_timestamp)
-	print "action_id:", action_id
-	
-	annot_number += 1
-	
-	#pdb.set_trace()
+	print("")
+	print("ffmpeg_command:", ffmpeg_command)
+	print("middle_frame_timestamp:", middle_frame_timestamp)
+	print("time:", hou_min_sec(middle_frame_timestamp))
+	print("action_id:", action_id)
+
 
 
 
